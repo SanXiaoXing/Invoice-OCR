@@ -14,6 +14,7 @@ from src.parser.pdf_parser import PDFParser
 from src.extractor.invoice_extractor import InvoiceExtractor
 from src.utils import amount_converter
 from src.ui.themes import get_theme_qss, THEMES
+from src.utils.logger import logger
 
 
 class WorkerThread(QThread):
@@ -27,6 +28,7 @@ class WorkerThread(QThread):
 
     def run(self):
         try:
+            logger.info(f"[WorkerThread] 开始识别，共 {len(self.file_paths)} 个文件")
             pdf_parser = PDFParser()
             extractor = InvoiceExtractor()
             results = []
@@ -35,11 +37,13 @@ class WorkerThread(QThread):
             processed_count = 0
 
             for i, file_path in enumerate(self.file_paths):
+                logger.info(f"[WorkerThread] 处理文件 ({i + 1}/{total}): {os.path.basename(file_path)}")
                 pages = pdf_parser.extract_text_by_page(file_path)
                 qr_codes_by_page = pdf_parser.extract_qr_codes(file_path)
                 qr_map = {page_num: codes for page_num, codes in qr_codes_by_page}
 
                 if not pages:
+                    logger.warning(f"[WorkerThread] 文件无文本内容: {os.path.basename(file_path)}")
                     processed_count += 1
                     progress = int(processed_count / total * 100)
                     self.progress.emit(progress)
@@ -53,13 +57,16 @@ class WorkerThread(QThread):
                     fields['full_path'] = file_path
                     fields['page_number'] = page_num
                     results.append(fields)
+                    logger.info(f"[WorkerThread] 第 {page_num} 页识别结果: 类型={invoice_type}, 金额={fields.get('amount', '无')}")
 
                 processed_count += 1
                 progress = int(processed_count / total * 100)
                 self.progress.emit(progress)
 
+            logger.info(f"[WorkerThread] 识别完成，共 {len(results)} 条记录")
             self.finished.emit(results)
         except Exception as e:
+            logger.error(f"[WorkerThread] 识别过程异常: {e}")
             self.error.emit(str(e))
 
 
@@ -78,6 +85,7 @@ class MainWindow(QMainWindow):
 
     def apply_theme(self, theme_name):
         """应用指定主题"""
+        logger.info(f"[MainWindow] 切换主题: {theme_name}")
         self.current_theme = theme_name
         self.setStyleSheet(get_theme_qss(theme_name))
         # 同步菜单栏选中状态
@@ -316,6 +324,10 @@ class MainWindow(QMainWindow):
             self, "选择 PDF 文件", "", "PDF 文件 (*.pdf)"
         )
 
+        if not files:
+            return
+        logger.info(f"[MainWindow] 用户选择 {len(files)} 个文件")
+
         added = 0
         for file in files:
             if file not in self.file_paths:
@@ -327,10 +339,14 @@ class MainWindow(QMainWindow):
                 added += 1
 
         if added:
+            logger.info(f"[MainWindow] 新增 {added} 个文件，总计 {len(self.file_paths)} 个")
             self.status_label.setText(f"已添加 {len(self.file_paths)} 个文件，点击「开始识别」")
 
     def delete_selected(self):
         selected_items = self.file_list.selectedItems()
+        if not selected_items:
+            return
+        logger.info(f"[MainWindow] 删除 {len(selected_items)} 个文件")
         for item in selected_items:
             file_path = item.data(Qt.UserRole)
             if file_path in self.file_paths:
@@ -340,6 +356,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"已添加 {len(self.file_paths)} 个文件")
 
     def clear_list(self):
+        logger.info(f"[MainWindow] 清空文件列表，清理前共 {len(self.file_paths)} 个文件")
         self.file_paths.clear()
         self.file_list.clear()
         self.result_table.setRowCount(0)
@@ -349,14 +366,17 @@ class MainWindow(QMainWindow):
         self.status_label.setText("等待上传文件...")
 
     def on_days_changed(self):
+        logger.debug(f"[MainWindow] 出差天数变更: {self.days_spinbox.value()}")
         self.update_preview()
         self.update_total()
 
     def start_recognition(self):
         if not self.file_paths:
+            logger.warning("[MainWindow] 用户未上传文件就点击开始识别")
             QMessageBox.warning(self, "提示", "请先上传 PDF 文件")
             return
 
+        logger.info(f"[MainWindow] 启动识别任务，文件数: {len(self.file_paths)}")
         self.recognize_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
@@ -372,6 +392,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(value)
 
     def on_recognition_finished(self, results):
+        logger.info(f"[MainWindow] 识别完成，共 {len(results)} 条记录")
         self.parsed_results = results
         self.progress_bar.setVisible(False)
         self.recognize_btn.setEnabled(True)
@@ -386,6 +407,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("未识别到有效发票数据")
 
     def on_recognition_error(self, error_msg):
+        logger.error(f"[MainWindow] 识别失败: {error_msg}")
         QMessageBox.critical(self, "错误", f"识别过程中发生错误：{error_msg}")
         self.progress_bar.setVisible(False)
         self.recognize_btn.setEnabled(True)

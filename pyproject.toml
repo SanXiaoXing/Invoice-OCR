@@ -1,0 +1,14 @@
+[project]
+name = "SnapClaim"
+version = "0.1.0"
+description = "基于内部发票识别并计算填写报销单"
+requires-python = ">=3.10"
+authors =  "SanXiaoXing"
+dependencies = [
+    "PySide6==6.7.0",
+    "pdfplumber==0.11.4",
+    "openpyxl==3.1.2",
+    "pyyaml==6.0.1",
+    "pypdfium2==5.11.0",
+    "opencv-python-headless==4.13.0.92",
+]

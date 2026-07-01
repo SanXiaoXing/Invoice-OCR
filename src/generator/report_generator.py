@@ -5,6 +5,7 @@ from typing import List, Dict
 import os
 from datetime import datetime
 from src.utils import amount_converter
+from src.utils.logger import logger
 
 
 class ReportGenerator:
@@ -13,6 +14,7 @@ class ReportGenerator:
 
     def generate_report(self, invoice_data_list: List[Dict], output_path: str) -> bool:
         try:
+            logger.info(f"[ReportGenerator] 开始生成报销单: {output_path}")
             wb = Workbook()
             ws = wb.active
             ws.title = "差旅费用报销单"
@@ -487,10 +489,10 @@ class ReportGenerator:
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
             wb.save(output_path)
-            
+            logger.info(f"[ReportGenerator] 报销单生成成功: {output_path}")
             return True
         except Exception as e:
-            print(f"生成报销单错误: {e}")
+            logger.error(f"[ReportGenerator] 生成报销单错误: {e}")
             import traceback
             traceback.print_exc()
             return False

@@ -1,0 +1,8 @@
+.venv/
+
+dist/
+
+.idea/
+.trae/
+
+logs/

@@ -2,6 +2,7 @@ import re
 import yaml
 import os
 from typing import Dict, Optional, List, Tuple, Union, Any
+from src.utils.logger import logger
 
 
 class InvoiceExtractor:
@@ -30,22 +31,26 @@ class InvoiceExtractor:
             发票类型字符串 (train/hotel/car/invoice/unknown)
         """
         qr_codes = qr_codes or []
-        
+
         # 优先根据二维码协议头判断同程商旅确认单类型
         for qr_data in qr_codes:
             if isinstance(qr_data, str):
                 if qr_data.startswith('etripCar://'):
+                    logger.info(f"[InvoiceExtractor] 二维码识别为用车: {qr_data}")
                     return 'car'
                 elif qr_data.startswith('etripHotel://'):
+                    logger.info(f"[InvoiceExtractor] 二维码识别为酒店: {qr_data}")
                     return 'hotel'
-        
+
         # 否则按文本关键词判断
         for invoice_type, config in self.invoice_types.items():
             keywords = config.get('keywords', [])
             for keyword in keywords:
                 if keyword in text:
+                    logger.info(f"[InvoiceExtractor] 关键词匹配，发票类型: {invoice_type}, 关键词: {keyword}")
                     return invoice_type
-        
+
+        logger.warning(f"[InvoiceExtractor] 未能识别发票类型")
         return 'unknown'
 
     def extract_fields(self, text: str, invoice_type: str,
@@ -63,12 +68,13 @@ class InvoiceExtractor:
         """
         result = {'type': invoice_type}
         qr_codes = qr_codes or []
-        
+
         if invoice_type not in self.invoice_types:
+            logger.warning(f"[InvoiceExtractor] 未知发票类型: {invoice_type}")
             return result
-            
+
         patterns = self.invoice_types[invoice_type].get('patterns', {})
-        
+
         for field_name, pattern_list in patterns.items():
             for pattern in pattern_list:
                 match = re.search(pattern, text)
@@ -78,17 +84,21 @@ class InvoiceExtractor:
                     else:
                         result[field_name] = match.group(1).strip()
                     break
-        
+
         # 对于用车和住宿确认单，优先使用二维码中的金额，准确率更高
         qr_amount = self._extract_amount_from_qr(qr_codes, invoice_type)
         if qr_amount is not None:
             result['amount'] = qr_amount
             result['qr_amount'] = True
+            logger.info(f"[InvoiceExtractor] 从二维码提取金额: {qr_amount} ({invoice_type})")
         else:
             amount = self.extract_amount(text)
             if amount is not None:
                 result['amount'] = amount
-        
+                logger.info(f"[InvoiceExtractor] 从文本提取金额: {amount} ({invoice_type})")
+            else:
+                logger.warning(f"[InvoiceExtractor] 未能提取金额 ({invoice_type})")
+
         return result
 
     def _extract_amount_from_qr(self, qr_codes: List[str],
