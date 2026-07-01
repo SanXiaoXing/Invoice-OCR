@@ -10,5 +10,11 @@ dependencies = [
     "openpyxl==3.1.2",
     "pyyaml==6.0.1",
     "pypdfium2==5.11.0",
+    "pypdf>=5.0.0",
     "opencv-python-headless==4.13.0.92",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]

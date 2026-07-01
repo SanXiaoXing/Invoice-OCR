@@ -1,6 +1,7 @@
 import pdfplumber
 import os
 from typing import List, Tuple
+from pypdf import PdfWriter, PdfReader
 from src.utils.logger import logger
 
 
@@ -92,3 +93,37 @@ class PDFParser:
             logger.error(f"[PDFParser] PDF二维码提取错误: {e}")
 
         return results
+
+    def merge_pdfs(self, file_paths: List[str], output_path: str) -> bool:
+        """
+        合并多个PDF文件为一个PDF
+
+        Args:
+            file_paths: 待合并的PDF文件路径列表
+            output_path: 输出PDF文件路径
+
+        Returns:
+            合并成功返回True，失败返回False
+        """
+        if not file_paths:
+            logger.warning("[PDFParser] 合并PDF：文件列表为空")
+            return False
+
+        try:
+            writer = PdfWriter()
+            for path in file_paths:
+                if not os.path.exists(path):
+                    logger.warning(f"[PDFParser] 合并PDF：文件不存在，跳过: {path}")
+                    continue
+                reader = PdfReader(path)
+                for page in reader.pages:
+                    writer.add_page(page)
+
+            with open(output_path, "wb") as f:
+                writer.write(f)
+
+            logger.info(f"[PDFParser] PDF合并完成，共合并 {len(file_paths)} 个文件 → {output_path}")
+            return True
+        except Exception as e:
+            logger.error(f"[PDFParser] PDF合并错误: {e}")
+            return False

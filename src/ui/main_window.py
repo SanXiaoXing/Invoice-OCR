@@ -124,6 +124,12 @@ class MainWindow(QMainWindow):
         self.menu_bar = QMenuBar()
         self.setMenuBar(self.menu_bar)
 
+        file_menu = self.menu_bar.addMenu("文件")
+        merge_action = QAction("合并PDF", self)
+        merge_action.setToolTip("将已上传的所有PDF文件合并为一个PDF")
+        merge_action.triggered.connect(self.merge_uploaded_pdfs)
+        file_menu.addAction(merge_action)
+
         view_menu = self.menu_bar.addMenu("视图")
         self.theme_menu = view_menu.addMenu("界面主题")
 
@@ -147,32 +153,42 @@ class MainWindow(QMainWindow):
         # 文件上传区
         upload_group = QGroupBox("上传 PDF 文件")
         upload_layout = QVBoxLayout(upload_group)
-        upload_layout.setSpacing(10)
+        upload_layout.setSpacing(12)
 
         hint = QLabel("选择包含高铁票、酒店或用车确认单的 PDF 文件")
         hint.setObjectName("hint_label")
         hint.setWordWrap(True)
+        hint.setContentsMargins(0, 0, 0, 4)
         upload_layout.addWidget(hint)
 
         self.upload_btn = QPushButton("添加 PDF 文件")
         self.upload_btn.setToolTip("添加一个或多个 PDF 文件")
         self.upload_btn.clicked.connect(self.upload_files)
+        self.upload_btn.setMinimumHeight(36)
         upload_layout.addWidget(self.upload_btn)
+
+        upload_layout.addSpacing(6)
 
         self.file_list = QListWidget()
         self.file_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.file_list.setMinimumHeight(160)
+        self.file_list.setMinimumHeight(180)
         upload_layout.addWidget(self.file_list)
 
+        upload_layout.addSpacing(6)
+
         file_actions = QHBoxLayout()
+        file_actions.setSpacing(10)
         self.delete_btn = QPushButton("删除选中")
         self.delete_btn.setObjectName("danger_btn")
         self.delete_btn.clicked.connect(self.delete_selected)
+        self.delete_btn.setMinimumWidth(100)
         file_actions.addWidget(self.delete_btn)
 
         self.clear_btn = QPushButton("清空列表")
         self.clear_btn.clicked.connect(self.clear_list)
+        self.clear_btn.setMinimumWidth(100)
         file_actions.addWidget(self.clear_btn)
+        file_actions.addStretch()
         upload_layout.addLayout(file_actions)
 
         layout.addWidget(upload_group)
@@ -369,6 +385,28 @@ class MainWindow(QMainWindow):
         logger.debug(f"[MainWindow] 出差天数变更: {self.days_spinbox.value()}")
         self.update_preview()
         self.update_total()
+
+    def merge_uploaded_pdfs(self):
+        if not self.file_paths:
+            QMessageBox.warning(self, "提示", "请先上传 PDF 文件")
+            return
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "保存合并后的PDF", "", "PDF 文件 (*.pdf)"
+        )
+        if not save_path:
+            return
+
+        logger.info(f"[MainWindow] 开始合并 {len(self.file_paths)} 个PDF → {save_path}")
+        parser = PDFParser()
+        success = parser.merge_pdfs(self.file_paths, save_path)
+
+        if success:
+            logger.info(f"[MainWindow] PDF合并成功: {save_path}")
+            QMessageBox.information(self, "成功", f"已合并 {len(self.file_paths)} 个PDF文件")
+        else:
+            logger.error(f"[MainWindow] PDF合并失败")
+            QMessageBox.critical(self, "错误", "PDF合并失败，请检查文件是否有效")
 
     def start_recognition(self):
         if not self.file_paths:
