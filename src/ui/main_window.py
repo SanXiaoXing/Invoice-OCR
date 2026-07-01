@@ -5,10 +5,10 @@ from PySide6.QtWidgets import (
     QLabel, QProgressBar, QFileDialog, QMessageBox,
     QSplitter, QGroupBox, QHeaderView, QSpinBox,
     QMenuBar, QMenu, QDialog, QDialogButtonBox, QSizePolicy,
-    QCalendarWidget
+    QCalendarWidget, QFrame
 )
 from PySide6.QtGui import QAction, QActionGroup, QFont, QColor
-from PySide6.QtCore import Qt, QThread, Signal, QDate
+from PySide6.QtCore import Qt, QThread, Signal, QDate, QSettings
 import os
 from datetime import datetime
 from src.services import expense_calculator, recognition_service, file_service, result_formatter
@@ -262,6 +262,71 @@ class TravelDateDialog(QDialog):
         return self.start_calendar.selectedDate(), self.end_calendar.selectedDate()
 
 
+class AboutDialog(QDialog):
+    """关于对话框 — 展示应用名称、版本、功能简介等信息"""
+
+    def __init__(self, parent=None, first_launch=False):
+        super().__init__(parent)
+        self.setWindowTitle("关于")
+        self.setFixedWidth(420)
+        self._first_launch = first_launch
+
+        # 继承父窗口主题
+        if parent and hasattr(parent, 'current_theme'):
+            self.setStyleSheet(get_theme_qss(parent.current_theme))
+
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(28, 24, 28, 20)
+
+        # 应用名称
+        title = QLabel("SnapClaim")
+        title.setObjectName("total_value")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        # 版本
+        version = QLabel("Verison: 0.1.0")
+        version.setObjectName("hint_label")
+        version.setAlignment(Qt.AlignCenter)
+        layout.addWidget(version)
+
+        # 分隔线
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(line)
+
+        # 功能简介
+        desc = QLabel(
+            "自动识别 PDF 发票和出行确认单，生成费用报销单。\n\n"
+            "支持识别：高铁票、酒店确认单、用车确认单、飞机确认单\n"
+            "自动汇总费用，一键导出报销单 Excel 和合并 PDF。"
+        )
+        desc.setWordWrap(True)
+        desc.setAlignment(Qt.AlignCenter)
+        layout.addWidget(desc)
+
+        # 提示信息（仅首次启动时显示）
+        if self._first_launch:
+            tip = QLabel("💡 后续可在菜单栏「帮助 → 关于」再次查看。")
+            tip.setObjectName("hint_label")
+            tip.setAlignment(Qt.AlignCenter)
+            tip.setWordWrap(True)
+            layout.addWidget(tip)
+
+        layout.addStretch()
+
+        # 底部按钮
+        btn_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        btn_box.button(QDialogButtonBox.Ok).setText("知道了")
+        btn_box.accepted.connect(self.accept)
+        layout.addWidget(btn_box)
+
+
 class WorkerThread(QThread):
     """识别任务线程 — 薄壳，调用 recognition_service 执行业务逻辑"""
     progress = Signal(int)
@@ -298,8 +363,15 @@ class MainWindow(QMainWindow):
         self._start_date = QDate.currentDate()
         self._end_date = QDate.currentDate()
 
+        self.settings = QSettings("SanXiaoXing", "SnapClaim")
+
         self.apply_theme(self.current_theme)
         self.init_ui()
+
+        # 首次启动自动弹出关于对话框
+        if not self.settings.value("about_shown", type=bool):
+            self._show_about(first_launch=True)
+            self.settings.setValue("about_shown", True)
 
     def apply_theme(self, theme_name):
         """应用指定主题"""
@@ -363,6 +435,14 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        # 帮助菜单
+        help_menu = self.menu_bar.addMenu("帮助(&H)")
+        about_action = QAction("关于", self)
+        about_action.setShortcut("Ctrl+Shift+A")
+        about_action.setToolTip("查看应用信息")
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
         view_menu = self.menu_bar.addMenu("视图")
         self.theme_menu = view_menu.addMenu("主题")
 
@@ -376,6 +456,11 @@ class MainWindow(QMainWindow):
             action.triggered.connect(self.on_theme_action_triggered)
             self.theme_action_group.addAction(action)
             self.theme_menu.addAction(action)
+
+    def _show_about(self, first_launch=False):
+        """弹出关于对话框"""
+        dialog = AboutDialog(self, first_launch=first_launch)
+        dialog.exec()
 
     def build_left_panel(self):
         panel = QWidget()
@@ -554,9 +639,9 @@ class MainWindow(QMainWindow):
         preview_layout.setSpacing(10)
 
         self.preview_table = QTableWidget()
-        self.preview_table.setColumnCount(8)
+        self.preview_table.setColumnCount(9)
         self.preview_table.setHorizontalHeaderLabels([
-            "出发地点", "到达地点", "交通金额", "住宿",
+            "出发地点", "到达地点", "交通金额", "飞机票", "住宿",
             "市内交通", "补助标准", "出差天数", "合计"
         ])
         self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -696,7 +781,7 @@ class MainWindow(QMainWindow):
         if not save_path:
             return
 
-        success = file_service.export_report(self.parsed_results, save_path)
+        success = file_service.export_report(self.parsed_results, save_path, self.days_spinbox.value())
 
         if success:
             self._show_success_dialog("导出完成", "报销单已成功导出", save_path)
@@ -724,7 +809,7 @@ class MainWindow(QMainWindow):
         # 合并 PDF
         pdf_success = file_service.merge_pdfs(self.file_paths, pdf_path)
         # 导出 Excel
-        xlsx_success = file_service.export_report(self.parsed_results, xlsx_path)
+        xlsx_success = file_service.export_report(self.parsed_results, xlsx_path, self.days_spinbox.value())
 
         # 汇总结果
         results = []

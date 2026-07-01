@@ -41,6 +41,9 @@ class InvoiceExtractor:
                 elif qr_data.startswith('etripHotel://'):
                     logger.info(f"[InvoiceExtractor] 二维码识别为酒店: {qr_data}")
                     return 'hotel'
+                elif qr_data.startswith('etrip://'):
+                    logger.info(f"[InvoiceExtractor] 二维码识别为飞机: {qr_data}")
+                    return 'flight'
 
         # 否则按文本关键词判断
         for invoice_type, config in self.invoice_types.items():
@@ -85,7 +88,7 @@ class InvoiceExtractor:
                         result[field_name] = match.group(1).strip()
                     break
 
-        # 对于用车和住宿确认单，优先使用二维码中的金额，准确率更高
+        # 对于用车、住宿和飞机确认单，优先使用二维码中的金额，准确率更高
         qr_amount = self._extract_amount_from_qr(qr_codes, invoice_type)
         if qr_amount is not None:
             result['amount'] = qr_amount
@@ -104,23 +107,26 @@ class InvoiceExtractor:
     def _extract_amount_from_qr(self, qr_codes: List[str],
                                 invoice_type: str) -> Optional[float]:
         """
-        从二维码内容中提取同程商旅用车/住宿金额
+        从二维码内容中提取同程商旅用车/住宿/飞机金额
         
         二维码格式示例：
-        - etripCar://745322,闫兴,DC260623184746145505,68.26
-        - etripHotel://870667,闫兴,2485235576652567552,3261.0
-        最后一个逗号后的字段即为金额。
+        - etripCar://745322,xxx,DC260623184746145505,68.26
+        - etripHotel://870667,xxx,2485235576652567552,3261.0
+        - etrip://2888257761,xxx,318.0,2317.0
+        用车/住宿：最后一个逗号后的字段即为金额。
+        飞机：第3个字段(index 2)为票面金额。
         
         Args:
             qr_codes: 二维码内容列表
-            invoice_type: 当前发票类型 (hotel/car)
+            invoice_type: 当前发票类型 (hotel/car/flight)
             
         Returns:
             提取到的金额，未匹配到则返回None
         """
         prefix_map = {
             'car': 'etripCar://',
-            'hotel': 'etripHotel://'
+            'hotel': 'etripHotel://',
+            'flight': 'etrip://',
         }
         prefix = prefix_map.get(invoice_type)
         if not prefix:
@@ -136,7 +142,12 @@ class InvoiceExtractor:
                 continue
             
             try:
-                return float(parts[-1])
+                if invoice_type == 'flight':
+                    # 飞机确认单：第3个字段为票面金额
+                    return float(parts[2])
+                else:
+                    # 用车/住宿：最后一个字段为金额
+                    return float(parts[-1])
             except ValueError:
                 continue
         

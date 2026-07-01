@@ -37,16 +37,17 @@ def merge_pdfs(file_paths: List[str], output_path: str) -> bool:
     return parser.merge_pdfs(file_paths, output_path)
 
 
-def export_report(invoice_data: List[Dict], output_path: str) -> bool:
+def export_report(invoice_data: List[Dict], output_path: str, days: int = 0) -> bool:
     """导出报销单 Excel 表格
 
     Args:
         invoice_data: 识别结果列表
         output_path: 输出 Excel 文件路径
+        days: 出差天数
 
     Returns:
         导出成功返回 True
     """
     logger.info(f"[FileService] 开始导出报销单 → {output_path}")
     generator = ReportGenerator()
-    return generator.generate_report(invoice_data, output_path)
+    return generator.generate_report(invoice_data, output_path, days)

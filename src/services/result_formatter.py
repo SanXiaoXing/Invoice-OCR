@@ -6,6 +6,7 @@ TYPE_MAP = {
     'train': '高铁票',
     'hotel': '酒店住宿',
     'car': '市内用车',
+    'flight': '飞机票',
     'invoice': '发票',
     'unknown': '未知',
 }
@@ -25,8 +26,8 @@ def format_result_row(result: Dict) -> Dict:
 
     return {
         'type_label': TYPE_MAP.get(result.get('type'), '未知'),
-        'name': result.get('train_number', '') or result.get('hotel_name', '') or result.get('filename', ''),
-        'date': result.get('departure_time', '') or result.get('check_in_date', '') or result.get('car_date', ''),
+        'name': result.get('train_number', '') or result.get('flight_number', '') or result.get('hotel_name', '') or result.get('filename', ''),
+        'date': result.get('departure_time', '') or result.get('flight_date', '') or result.get('check_in_date', '') or result.get('car_date', ''),
         'amount': f"¥{amount}",
         'status': '已识别' if has_amount else '未识别金额',
         'status_color': '#047857' if has_amount else '#B45309',
