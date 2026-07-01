@@ -4,20 +4,266 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem,
     QLabel, QProgressBar, QFileDialog, QMessageBox,
     QSplitter, QGroupBox, QHeaderView, QSpinBox,
-    QMenuBar, QMenu
+    QMenuBar, QMenu, QDialog, QDialogButtonBox, QSizePolicy,
+    QCalendarWidget
 )
-from PySide6.QtGui import QAction, QActionGroup
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QAction, QActionGroup, QFont, QColor
+from PySide6.QtCore import Qt, QThread, Signal, QDate
 import os
-from src.parser.pdf_parser import PDFParser
-from src.extractor.invoice_extractor import InvoiceExtractor
-from src.utils import amount_converter
+from datetime import datetime
+from src.services import expense_calculator, recognition_service, file_service, result_formatter
 from src.ui.themes import get_theme_qss, THEMES
 from src.utils.logger import logger
 
 
+class MergePdfDialog(QDialog):
+    """合并 PDF 文件对话框 — 展示文件列表、支持排序、显示页数"""
+
+    def __init__(self, file_paths, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("合并 PDF 文件")
+        self.setMinimumSize(520, 400)
+        self.file_paths = list(file_paths)  # 可编辑的副本
+        self._page_counts = {}  # 缓存页数
+
+        # 继承父窗口主题
+        if parent and hasattr(parent, 'current_theme'):
+            self.setStyleSheet(get_theme_qss(parent.current_theme))
+
+        self._init_ui()
+        self._load_page_counts()
+
+    # ── UI ───────────────────────────────────────────────
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+
+        # 顶部说明
+        hint = QLabel("以下 PDF 将按列表顺序合并，可通过上下按钮调整顺序：")
+        hint.setObjectName("hint_label")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        # 文件列表 + 排序按钮
+        body = QHBoxLayout()
+        body.setSpacing(10)
+
+        self.file_list = QListWidget()
+        self.file_list.setDragDropMode(QListWidget.NoDragDrop)
+        self.file_list.setSelectionMode(QListWidget.SingleSelection)
+        self.file_list.setAlternatingRowColors(True)
+        self.file_list.currentRowChanged.connect(self._on_row_changed)
+        body.addWidget(self.file_list, 1)
+
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(6)
+
+        self.up_btn = QPushButton("↑ 上移")
+        self.up_btn.setToolTip("将选中文件上移一位")
+        self.up_btn.setEnabled(False)
+        self.up_btn.clicked.connect(self._move_up)
+        btn_col.addWidget(self.up_btn)
+
+        self.down_btn = QPushButton("↓ 下移")
+        self.down_btn.setToolTip("将选中文件下移一位")
+        self.down_btn.setEnabled(False)
+        self.down_btn.clicked.connect(self._move_down)
+        btn_col.addWidget(self.down_btn)
+
+        btn_col.addStretch()
+        body.addLayout(btn_col)
+
+        layout.addLayout(body, 1)
+
+        # 统计信息
+        self.summary_label = QLabel()
+        self.summary_label.setObjectName("hint_label")
+        layout.addWidget(self.summary_label)
+
+        # 底部按钮
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        btn_box.button(QDialogButtonBox.Ok).setText("合并")
+        btn_box.button(QDialogButtonBox.Cancel).setText("取消")
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+        # 填充列表
+        self._refresh_list()
+
+    # ── 数据加载 ─────────────────────────────────────────
+    def _load_page_counts(self):
+        """后台统计每个 PDF 的页数"""
+        class _PageCountThread(QThread):
+            done = Signal(dict)
+
+            def __init__(self, paths):
+                super().__init__()
+                self.paths = paths
+
+            def run(self):
+                counts = {}
+                for p in self.paths:
+                    try:
+                        from pypdf import PdfReader
+                        counts[p] = len(PdfReader(p).pages)
+                    except Exception:
+                        counts[p] = 0
+                self.done.emit(counts)
+
+        self._pc_thread = _PageCountThread(self.file_paths)
+        self._pc_thread.done.connect(self._on_page_counts_ready)
+        self._pc_thread.start()
+
+    def _on_page_counts_ready(self, counts):
+        self._page_counts = counts
+        self._refresh_list()
+
+    # ── 列表刷新 ─────────────────────────────────────────
+    def _refresh_list(self):
+        self.file_list.clear()
+        for i, path in enumerate(self.file_paths, 1):
+            name = os.path.basename(path)
+            pages = self._page_counts.get(path)
+            suffix = f"  ({pages} 页)" if pages is not None else ""
+            item = QListWidgetItem(f"{i}.  {name}{suffix}")
+            item.setToolTip(path)
+            item.setData(Qt.UserRole, path)
+            self.file_list.addItem(item)
+
+        total_files = len(self.file_paths)
+        total_pages = sum(v for v in self._page_counts.values() if v)
+        if self._page_counts:
+            self.summary_label.setText(f"共 {total_files} 个文件，{total_pages} 页")
+        else:
+            self.summary_label.setText(f"共 {total_files} 个文件")
+
+    # ── 排序操作 ─────────────────────────────────────────
+    def _on_row_changed(self, row):
+        self.up_btn.setEnabled(row > 0)
+        self.down_btn.setEnabled(0 <= row < self.file_list.count() - 1)
+
+    def _swap_rows(self, r1, r2):
+        self.file_paths[r1], self.file_paths[r2] = self.file_paths[r2], self.file_paths[r1]
+        self._refresh_list()
+        self.file_list.setCurrentRow(r2)
+
+    def _move_up(self):
+        row = self.file_list.currentRow()
+        if row > 0:
+            self._swap_rows(row, row - 1)
+
+    def _move_down(self):
+        row = self.file_list.currentRow()
+        if row < self.file_list.count() - 1:
+            self._swap_rows(row, row + 1)
+
+    # ── 对外接口 ─────────────────────────────────────────
+    def get_ordered_paths(self):
+        return list(self.file_paths)
+
+
+class TravelDateDialog(QDialog):
+    """出差日期选择对话框 — 两个并排日历，选择出发和返回日期"""
+
+    def __init__(self, start_date, end_date, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择出差日期")
+        self.setMinimumSize(640, 420)
+        self._start_date = start_date
+        self._end_date = end_date
+
+        if parent and hasattr(parent, 'current_theme'):
+            self.setStyleSheet(get_theme_qss(parent.current_theme))
+
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # 两个并排日历
+        calendars_layout = QHBoxLayout()
+        calendars_layout.setSpacing(12)
+
+        # 出发日历
+        start_col = QVBoxLayout()
+        start_col.setSpacing(4)
+        start_title = QLabel("出发日期")
+        start_title.setAlignment(Qt.AlignCenter)
+        start_title.setObjectName("hint_label")
+        start_col.addWidget(start_title)
+
+        self.start_calendar = QCalendarWidget()
+        self.start_calendar.setSelectedDate(self._start_date)
+        self.start_calendar.setGridVisible(True)
+        self.start_calendar.clicked.connect(self._on_start_clicked)
+        start_col.addWidget(self.start_calendar)
+        calendars_layout.addLayout(start_col)
+
+        # 返回日历
+        end_col = QVBoxLayout()
+        end_col.setSpacing(4)
+        end_title = QLabel("返回日期")
+        end_title.setAlignment(Qt.AlignCenter)
+        end_title.setObjectName("hint_label")
+        end_col.addWidget(end_title)
+
+        self.end_calendar = QCalendarWidget()
+        self.end_calendar.setSelectedDate(self._end_date)
+        self.end_calendar.setGridVisible(True)
+        self.end_calendar.clicked.connect(self._on_end_clicked)
+        end_col.addWidget(self.end_calendar)
+        calendars_layout.addLayout(end_col)
+
+        layout.addLayout(calendars_layout, 1)
+
+        # 摘要行
+        self.summary_label = QLabel()
+        self.summary_label.setAlignment(Qt.AlignCenter)
+        self.summary_label.setObjectName("total_chinese")
+        self._update_summary()
+        layout.addWidget(self.summary_label)
+
+        # 底部按钮
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        btn_box.button(QDialogButtonBox.Ok).setText("确定")
+        btn_box.button(QDialogButtonBox.Cancel).setText("取消")
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def _on_start_clicked(self, date):
+        """点击出发日历时，确保返回日期不早于出发日期"""
+        if date > self.end_calendar.selectedDate():
+            self.end_calendar.setSelectedDate(date)
+        self._update_summary()
+
+    def _on_end_clicked(self, date):
+        """点击返回日历时，确保出发日期不晚于返回日期"""
+        if date < self.start_calendar.selectedDate():
+            self.start_calendar.setSelectedDate(date)
+        self._update_summary()
+
+    def _update_summary(self):
+        start = self.start_calendar.selectedDate()
+        end = self.end_calendar.selectedDate()
+        days = start.daysTo(end) + 1
+        self.summary_label.setText(
+            f"{start.toString('yyyy-MM-dd')} ~ {end.toString('yyyy-MM-dd')}，共 {days} 天"
+        )
+
+    def get_date_range(self):
+        """返回 (出发日期, 返回日期)"""
+        return self.start_calendar.selectedDate(), self.end_calendar.selectedDate()
+
+
 class WorkerThread(QThread):
+    """识别任务线程 — 薄壳，调用 recognition_service 执行业务逻辑"""
     progress = Signal(int)
     finished = Signal(list)
     error = Signal(str)
@@ -28,46 +274,16 @@ class WorkerThread(QThread):
 
     def run(self):
         try:
-            logger.info(f"[WorkerThread] 开始识别，共 {len(self.file_paths)} 个文件")
-            pdf_parser = PDFParser()
-            extractor = InvoiceExtractor()
-            results = []
-
-            total = len(self.file_paths)
-            processed_count = 0
-
-            for i, file_path in enumerate(self.file_paths):
-                logger.info(f"[WorkerThread] 处理文件 ({i + 1}/{total}): {os.path.basename(file_path)}")
-                pages = pdf_parser.extract_text_by_page(file_path)
-                qr_codes_by_page = pdf_parser.extract_qr_codes(file_path)
-                qr_map = {page_num: codes for page_num, codes in qr_codes_by_page}
-
-                if not pages:
-                    logger.warning(f"[WorkerThread] 文件无文本内容: {os.path.basename(file_path)}")
-                    processed_count += 1
-                    progress = int(processed_count / total * 100)
-                    self.progress.emit(progress)
-                    continue
-
-                for page_num, page_text in pages:
-                    qr_codes = qr_map.get(page_num, [])
-                    invoice_type = extractor.detect_invoice_type(page_text, qr_codes)
-                    fields = extractor.extract_fields(page_text, invoice_type, qr_codes)
-                    fields['filename'] = os.path.basename(file_path)
-                    fields['full_path'] = file_path
-                    fields['page_number'] = page_num
-                    results.append(fields)
-                    logger.info(f"[WorkerThread] 第 {page_num} 页识别结果: 类型={invoice_type}, 金额={fields.get('amount', '无')}")
-
-                processed_count += 1
-                progress = int(processed_count / total * 100)
-                self.progress.emit(progress)
-
-            logger.info(f"[WorkerThread] 识别完成，共 {len(results)} 条记录")
+            results = recognition_service.process_files(
+                self.file_paths, self._on_progress
+            )
             self.finished.emit(results)
         except Exception as e:
             logger.error(f"[WorkerThread] 识别过程异常: {e}")
             self.error.emit(str(e))
+
+    def _on_progress(self, current, total):
+        self.progress.emit(int(current / total * 100))
 
 
 class MainWindow(QMainWindow):
@@ -79,6 +295,8 @@ class MainWindow(QMainWindow):
         self.file_paths = []
         self.parsed_results = []
         self.current_theme = "清爽办公风"
+        self._start_date = QDate.currentDate()
+        self._end_date = QDate.currentDate()
 
         self.apply_theme(self.current_theme)
         self.init_ui()
@@ -124,14 +342,29 @@ class MainWindow(QMainWindow):
         self.menu_bar = QMenuBar()
         self.setMenuBar(self.menu_bar)
 
-        file_menu = self.menu_bar.addMenu("文件")
-        merge_action = QAction("合并PDF", self)
-        merge_action.setToolTip("将已上传的所有PDF文件合并为一个PDF")
+        file_menu = self.menu_bar.addMenu("文件(&F)")
+        merge_action = QAction("合并 PDF…", self)
+        merge_action.setShortcut("Ctrl+M")
+        merge_action.setToolTip("将已上传的所有 PDF 文件按顺序合并为一个文件")
         merge_action.triggered.connect(self.merge_uploaded_pdfs)
         file_menu.addAction(merge_action)
 
+        export_action = QAction("导出报销单…", self)
+        export_action.setShortcut("Ctrl+E")
+        export_action.setToolTip("将识别结果导出为报销单 Excel 表格")
+        export_action.triggered.connect(self.export_report)
+        file_menu.addAction(export_action)
+
+        one_click_action = QAction("一键导出", self)
+        one_click_action.setShortcut("Ctrl+Shift+E")
+        one_click_action.setToolTip("同时导出合并 PDF 和报销单 Excel")
+        one_click_action.triggered.connect(self.one_click_export)
+        file_menu.addAction(one_click_action)
+
+        file_menu.addSeparator()
+
         view_menu = self.menu_bar.addMenu("视图")
-        self.theme_menu = view_menu.addMenu("界面主题")
+        self.theme_menu = view_menu.addMenu("主题")
 
         self.theme_action_group = QActionGroup(self)
         self.theme_action_group.setExclusive(True)
@@ -148,59 +381,51 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
 
         # 文件上传区
         upload_group = QGroupBox("上传 PDF 文件")
+        upload_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         upload_layout = QVBoxLayout(upload_group)
-        upload_layout.setSpacing(12)
+        upload_layout.setSpacing(8)
 
         hint = QLabel("选择包含高铁票、酒店或用车确认单的 PDF 文件")
         hint.setObjectName("hint_label")
         hint.setWordWrap(True)
-        hint.setContentsMargins(0, 0, 0, 4)
         upload_layout.addWidget(hint)
 
         self.upload_btn = QPushButton("添加 PDF 文件")
         self.upload_btn.setToolTip("添加一个或多个 PDF 文件")
         self.upload_btn.clicked.connect(self.upload_files)
-        self.upload_btn.setMinimumHeight(36)
         upload_layout.addWidget(self.upload_btn)
-
-        upload_layout.addSpacing(6)
 
         self.file_list = QListWidget()
         self.file_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.file_list.setMinimumHeight(180)
-        upload_layout.addWidget(self.file_list)
-
-        upload_layout.addSpacing(6)
+        self.file_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        upload_layout.addWidget(self.file_list, 1)
 
         file_actions = QHBoxLayout()
-        file_actions.setSpacing(10)
+        file_actions.setSpacing(8)
         self.delete_btn = QPushButton("删除选中")
         self.delete_btn.setObjectName("danger_btn")
         self.delete_btn.clicked.connect(self.delete_selected)
-        self.delete_btn.setMinimumWidth(100)
         file_actions.addWidget(self.delete_btn)
 
         self.clear_btn = QPushButton("清空列表")
         self.clear_btn.clicked.connect(self.clear_list)
-        self.clear_btn.setMinimumWidth(100)
         file_actions.addWidget(self.clear_btn)
-        file_actions.addStretch()
         upload_layout.addLayout(file_actions)
 
-        layout.addWidget(upload_group)
+        layout.addWidget(upload_group, 1)
 
         # 操作区
         action_group = QGroupBox("识别")
+        action_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         action_layout = QVBoxLayout(action_group)
-        action_layout.setSpacing(10)
+        action_layout.setSpacing(8)
 
         self.recognize_btn = QPushButton("开始识别")
         self.recognize_btn.setObjectName("primary_btn")
-        self.recognize_btn.setMinimumHeight(40)
         self.recognize_btn.clicked.connect(self.start_recognition)
         action_layout.addWidget(self.recognize_btn)
 
@@ -215,33 +440,42 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(action_group)
 
-        # 出差设置
+        # 出差设置（紧凑布局：一行显示日期区间 + 天数 + 选择按钮）
         travel_group = QGroupBox("出差设置")
+        travel_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         travel_layout = QVBoxLayout(travel_group)
-        travel_layout.setSpacing(10)
+        travel_layout.setSpacing(6)
 
-        standard_hint = QLabel("补助标准：¥100 / 天")
-        standard_hint.setObjectName("hint_label")
-        travel_layout.addWidget(standard_hint)
+        date_row = QHBoxLayout()
+        date_row.setSpacing(6)
 
-        days_layout = QHBoxLayout()
-        days_label = QLabel("出差天数：")
-        days_layout.addWidget(days_label)
+        self.travel_date_label = QLabel()
+        self.travel_date_label.setObjectName("hint_label")
+        self._refresh_travel_date_label(QDate.currentDate(), QDate.currentDate())
+        date_row.addWidget(self.travel_date_label, 1)
 
         self.days_spinbox = QSpinBox()
         self.days_spinbox.setRange(0, 999)
-        self.days_spinbox.setValue(0)
+        self.days_spinbox.setValue(1)
         self.days_spinbox.setSuffix(" 天")
+        self.days_spinbox.setFixedWidth(72)
         self.days_spinbox.valueChanged.connect(self.on_days_changed)
-        days_layout.addWidget(self.days_spinbox)
-        travel_layout.addLayout(days_layout)
+        self.days_spinbox.setToolTip("出差天数（可手动微调）")
+        date_row.addWidget(self.days_spinbox)
 
+        self.date_pick_btn = QPushButton("选择日期")
+        self.date_pick_btn.setToolTip("通过日历选择出差日期区间")
+        self.date_pick_btn.clicked.connect(self.open_travel_date_dialog)
+        date_row.addWidget(self.date_pick_btn)
+
+        travel_layout.addLayout(date_row)
         layout.addWidget(travel_group)
 
         # 费用汇总
         summary_group = QGroupBox("费用汇总")
+        summary_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         summary_layout = QVBoxLayout(summary_group)
-        summary_layout.setSpacing(8)
+        summary_layout.setSpacing(6)
 
         self.total_label = QLabel("¥ 0.00")
         self.total_label.setObjectName("total_value")
@@ -256,6 +490,7 @@ class MainWindow(QMainWindow):
         detail_layout = QHBoxLayout()
 
         advance_layout = QVBoxLayout()
+        advance_layout.setSpacing(2)
         advance_title = QLabel("预借金额")
         advance_title.setObjectName("hint_label")
         advance_title.setAlignment(Qt.AlignCenter)
@@ -267,6 +502,7 @@ class MainWindow(QMainWindow):
         detail_layout.addLayout(advance_layout)
 
         refund_layout = QVBoxLayout()
+        refund_layout.setSpacing(2)
         refund_title = QLabel("退补金额")
         refund_title.setObjectName("hint_label")
         refund_title.setAlignment(Qt.AlignCenter)
@@ -281,7 +517,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(summary_group)
 
-        layout.addStretch()
         return panel
 
     def build_right_panel(self):
@@ -335,6 +570,8 @@ class MainWindow(QMainWindow):
 
         return panel
 
+    # ── 文件管理 ─────────────────────────────────────────
+
     def upload_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "选择 PDF 文件", "", "PDF 文件 (*.pdf)"
@@ -381,32 +618,154 @@ class MainWindow(QMainWindow):
         self.update_total()
         self.status_label.setText("等待上传文件...")
 
+    # ── 出差天数 ─────────────────────────────────────────
+
+    def _refresh_travel_date_label(self, start, end):
+        """更新面板上的日期区间摘要文本"""
+        days = start.daysTo(end) + 1
+        if start == end:
+            self.travel_date_label.setText(f"出差: {start.toString('MM/dd')} (1天)")
+        else:
+            self.travel_date_label.setText(
+                f"出差: {start.toString('MM/dd')} ~ {end.toString('MM/dd')} ({days}天)"
+            )
+
+    def open_travel_date_dialog(self):
+        """打开出差日期选择弹窗"""
+        dialog = TravelDateDialog(self._start_date, self._end_date, self)
+        if dialog.exec() == QDialog.Accepted:
+            start, end = dialog.get_date_range()
+            self._start_date = start
+            self._end_date = end
+            days = start.daysTo(end) + 1
+
+            self._refresh_travel_date_label(start, end)
+            self.days_spinbox.blockSignals(True)
+            self.days_spinbox.setValue(days)
+            self.days_spinbox.blockSignals(False)
+            self.update_preview()
+            self.update_total()
+            logger.debug(f"[MainWindow] 日期区间变更: {start.toString('yyyy-MM-dd')} ~ {end.toString('yyyy-MM-dd')}, 天数={days}")
+
     def on_days_changed(self):
         logger.debug(f"[MainWindow] 出差天数变更: {self.days_spinbox.value()}")
         self.update_preview()
         self.update_total()
+
+    # ── 合并 / 导出 ─────────────────────────────────────
 
     def merge_uploaded_pdfs(self):
         if not self.file_paths:
             QMessageBox.warning(self, "提示", "请先上传 PDF 文件")
             return
 
+        dialog = MergePdfDialog(self.file_paths, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        ordered_paths = dialog.get_ordered_paths()
+
+        default_name = datetime.now().strftime("%Y%m%d") + ".pdf"
         save_path, _ = QFileDialog.getSaveFileName(
-            self, "保存合并后的PDF", "", "PDF 文件 (*.pdf)"
+            self, "保存合并后的 PDF", default_name, "PDF 文件 (*.pdf)"
         )
         if not save_path:
             return
 
-        logger.info(f"[MainWindow] 开始合并 {len(self.file_paths)} 个PDF → {save_path}")
-        parser = PDFParser()
-        success = parser.merge_pdfs(self.file_paths, save_path)
+        success = file_service.merge_pdfs(ordered_paths, save_path)
 
         if success:
-            logger.info(f"[MainWindow] PDF合并成功: {save_path}")
-            QMessageBox.information(self, "成功", f"已合并 {len(self.file_paths)} 个PDF文件")
+            self._show_success_dialog(
+                "合并完成",
+                f"已成功合并 {len(ordered_paths)} 个 PDF 文件",
+                save_path,
+            )
         else:
-            logger.error(f"[MainWindow] PDF合并失败")
-            QMessageBox.critical(self, "错误", "PDF合并失败，请检查文件是否有效")
+            QMessageBox.critical(self, "合并失败", "PDF 合并失败，请检查文件是否有效")
+
+    def export_report(self):
+        """导出报销单 Excel 表格"""
+        if not self.parsed_results:
+            QMessageBox.warning(self, "提示", "请先完成发票识别后再导出报销单")
+            return
+
+        default_name = datetime.now().strftime("%Y%m%d") + ".xlsx"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "导出报销单", default_name, "Excel 文件 (*.xlsx)"
+        )
+        if not save_path:
+            return
+
+        success = file_service.export_report(self.parsed_results, save_path)
+
+        if success:
+            self._show_success_dialog("导出完成", "报销单已成功导出", save_path)
+        else:
+            QMessageBox.critical(self, "导出失败", "报销单导出失败，请检查数据是否有效")
+
+    def one_click_export(self):
+        """一键导出：同时生成合并 PDF 和报销单 Excel"""
+        if not self.file_paths:
+            QMessageBox.warning(self, "提示", "请先上传 PDF 文件")
+            return
+        if not self.parsed_results:
+            QMessageBox.warning(self, "提示", "请先完成发票识别后再导出")
+            return
+
+        # 选择保存目录
+        save_dir = QFileDialog.getExistingDirectory(self, "选择导出目录")
+        if not save_dir:
+            return
+
+        date_prefix = datetime.now().strftime("%Y%m%d")
+        pdf_path = os.path.join(save_dir, f"{date_prefix}.pdf")
+        xlsx_path = os.path.join(save_dir, f"{date_prefix}.xlsx")
+
+        # 合并 PDF
+        pdf_success = file_service.merge_pdfs(self.file_paths, pdf_path)
+        # 导出 Excel
+        xlsx_success = file_service.export_report(self.parsed_results, xlsx_path)
+
+        # 汇总结果
+        results = []
+        if pdf_success:
+            results.append(f"✓ 合并 PDF：{pdf_path}")
+        else:
+            results.append("✗ 合并 PDF 失败")
+        if xlsx_success:
+            results.append(f"✓ 报销单 Excel：{xlsx_path}")
+        else:
+            results.append("✗ 报销单 Excel 导出失败")
+
+        if pdf_success and xlsx_success:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("一键导出完成")
+            msg.setText("所有文件已成功导出")
+            msg.setInformativeText("\n".join(results))
+            open_btn = msg.addButton("打开所在文件夹", QMessageBox.ActionRole)
+            msg.addButton("确定", QMessageBox.AcceptRole)
+            msg.exec()
+            if msg.clickedButton() == open_btn:
+                file_service.open_containing_folder(save_dir)
+        else:
+            QMessageBox.warning(self, "导出部分失败", "\n".join(results))
+
+    def _show_success_dialog(self, title, text, save_path):
+        """通用的成功提示对话框，带「打开所在文件夹」按钮"""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle(title)
+        msg.setText(text)
+        msg.setInformativeText(f"保存至：{save_path}")
+        open_btn = msg.addButton("打开所在文件夹", QMessageBox.ActionRole)
+        msg.addButton("确定", QMessageBox.AcceptRole)
+        msg.exec()
+
+        if msg.clickedButton() == open_btn:
+            file_service.open_containing_folder(save_path)
+
+    # ── 识别流程 ─────────────────────────────────────────
 
     def start_recognition(self):
         if not self.file_paths:
@@ -451,164 +810,59 @@ class MainWindow(QMainWindow):
         self.recognize_btn.setEnabled(True)
         self.status_label.setText("识别失败")
 
+    # ── 表格展示 ─────────────────────────────────────────
+
     def display_results(self, results):
         self.result_table.setRowCount(0)
-
-        type_map = {
-            'train': '高铁票',
-            'hotel': '酒店住宿',
-            'car': '市内用车',
-            'invoice': '发票',
-            'unknown': '未知'
-        }
 
         for result in results:
             row = self.result_table.rowCount()
             self.result_table.insertRow(row)
 
-            invoice_type = type_map.get(result.get('type'), '未知')
-            self.result_table.setItem(row, 0, QTableWidgetItem(invoice_type))
+            fmt = result_formatter.format_result_row(result)
 
-            name = result.get('train_number', '') or result.get('hotel_name', '') or result.get('filename', '')
-            self.result_table.setItem(row, 1, QTableWidgetItem(name))
+            self.result_table.setItem(row, 0, QTableWidgetItem(fmt['type_label']))
+            self.result_table.setItem(row, 1, QTableWidgetItem(fmt['name']))
+            self.result_table.setItem(row, 2, QTableWidgetItem(fmt['date']))
 
-            date = result.get('departure_time', '') or result.get('check_in_date', '') or result.get('car_date', '')
-            self.result_table.setItem(row, 2, QTableWidgetItem(date))
-
-            amount = result.get('amount', '0')
-            amount_item = QTableWidgetItem(f"¥{amount}")
+            amount_item = QTableWidgetItem(fmt['amount'])
             amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.result_table.setItem(row, 3, amount_item)
 
-            if amount:
-                status_text = "已识别"
-                status_item = QTableWidgetItem(status_text)
-                status_item.setForeground(QColor("#047857"))
-            else:
-                status_text = "未识别金额"
-                status_item = QTableWidgetItem(status_text)
-                status_item.setForeground(QColor("#B45309"))
+            status_item = QTableWidgetItem(fmt['status'])
+            status_item.setForeground(QColor(fmt['status_color']))
             self.result_table.setItem(row, 4, status_item)
 
     def update_total(self):
-        train_total = sum(float(r.get('amount', '0')) for r in self.parsed_results if r.get('type') == 'train')
-        hotel_total = sum(float(r.get('amount', '0')) for r in self.parsed_results if r.get('type') == 'hotel')
-        car_total = sum(float(r.get('amount', '0')) for r in self.parsed_results if r.get('type') == 'car')
-        invoice_total = sum(float(r.get('amount', '0')) for r in self.parsed_results if r.get('type') == 'invoice')
-
-        days = self.days_spinbox.value()
-        subsidy = days * 100
-
-        advance = hotel_total + invoice_total + car_total
-        refund = train_total + subsidy
-        total = train_total + hotel_total + car_total + invoice_total + subsidy
-
-        self.total_label.setText(f"¥ {total:,.2f}")
-        self.advance_label.setText(f"¥ {advance:,.2f}")
-        self.refund_label.setText(f"¥ {refund:,.2f}")
-
-        chinese = amount_converter.convert(total)
-        self.chinese_label.setText(chinese)
+        t = expense_calculator.calc_totals(self.parsed_results, self.days_spinbox.value())
+        self.total_label.setText(f"¥ {t['total']:,.2f}")
+        self.advance_label.setText(f"¥ {t['advance']:,.2f}")
+        self.refund_label.setText(f"¥ {t['refund']:,.2f}")
+        self.chinese_label.setText(t['chinese'])
 
     def update_preview(self):
         self.preview_table.setRowCount(0)
 
-        train_data = [r for r in self.parsed_results if r.get('type') == 'train']
-        hotel_data = [r for r in self.parsed_results if r.get('type') == 'hotel']
-        car_data = [r for r in self.parsed_results if r.get('type') == 'car']
-        invoice_data = [r for r in self.parsed_results if r.get('type') == 'invoice']
+        rows = expense_calculator.build_preview_rows(
+            self.parsed_results, self.days_spinbox.value()
+        )
 
-        train_total = sum(float(r.get('amount', '0')) for r in train_data)
-        hotel_total = sum(float(r.get('amount', '0')) for r in hotel_data)
-        car_total = sum(float(r.get('amount', '0')) for r in car_data)
-        invoice_total = sum(float(r.get('amount', '0')) for r in invoice_data)
+        bold_font = QFont()
+        bold_font.setBold(True)
 
-        days = self.days_spinbox.value()
-        subsidy_per_day = 100
-        subsidy_total = days * subsidy_per_day
-
-        def set_amount_item(row, col, value):
-            item = QTableWidgetItem(f"{value:.2f}")
-            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.preview_table.setItem(row, col, item)
-
-        def set_empty_cells(row, cols):
-            for col in cols:
-                self.preview_table.setItem(row, col, QTableWidgetItem(''))
-
-        # 高铁票行
-        for train in train_data:
+        for row_data in rows:
             row = self.preview_table.rowCount()
             self.preview_table.insertRow(row)
 
-            self.preview_table.setItem(row, 0, QTableWidgetItem(train.get('departure_station', '')))
-            self.preview_table.setItem(row, 1, QTableWidgetItem(train.get('arrival_station', '')))
-            set_empty_cells(row, (3, 4, 5, 6))
+            cells = row_data['cells']
+            for col, value in enumerate(cells):
+                if isinstance(value, float):
+                    item = QTableWidgetItem(f"{value:.2f}")
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                else:
+                    item = QTableWidgetItem(str(value))
 
-            amount = float(train.get('amount', '0'))
-            set_amount_item(row, 2, amount)
-            set_amount_item(row, 7, amount)
+                if row_data['bold']:
+                    item.setFont(bold_font)
 
-        # 住宿合计行
-        if hotel_total:
-            row = self.preview_table.rowCount()
-            self.preview_table.insertRow(row)
-            self.preview_table.setItem(row, 0, QTableWidgetItem('住宿'))
-            set_empty_cells(row, (1, 2, 4, 5, 6))
-            set_amount_item(row, 3, hotel_total)
-            set_amount_item(row, 7, hotel_total)
-
-        # 市内交通合计行
-        if car_total:
-            row = self.preview_table.rowCount()
-            self.preview_table.insertRow(row)
-            self.preview_table.setItem(row, 0, QTableWidgetItem('市内交通'))
-            set_empty_cells(row, (1, 2, 3, 5, 6))
-            set_amount_item(row, 4, car_total)
-            set_amount_item(row, 7, car_total)
-
-        # 其他发票行
-        if invoice_total:
-            row = self.preview_table.rowCount()
-            self.preview_table.insertRow(row)
-            self.preview_table.setItem(row, 0, QTableWidgetItem('其他'))
-            set_empty_cells(row, (1, 3, 4, 5, 6))
-            set_amount_item(row, 2, invoice_total)
-            set_amount_item(row, 7, invoice_total)
-
-        # 出差补助行
-        if subsidy_total:
-            row = self.preview_table.rowCount()
-            self.preview_table.insertRow(row)
-            self.preview_table.setItem(row, 0, QTableWidgetItem('出差补助'))
-            set_empty_cells(row, (1, 2, 3, 4))
-            self.preview_table.setItem(row, 5, QTableWidgetItem(str(subsidy_per_day)))
-            self.preview_table.setItem(row, 6, QTableWidgetItem(str(days)))
-            set_amount_item(row, 7, subsidy_total)
-
-        # 合计行
-        row = self.preview_table.rowCount()
-        self.preview_table.insertRow(row)
-        self.preview_table.setItem(row, 0, QTableWidgetItem('合计'))
-        set_empty_cells(row, (1, 5, 6))
-
-        total_amount = train_total + hotel_total + car_total + invoice_total + subsidy_total
-        font = QFont()
-        font.setBold(True)
-
-        for value, col in (
-            (train_total + invoice_total, 2),
-            (hotel_total, 3),
-            (car_total, 4),
-        ):
-            item = QTableWidgetItem(f"{value:.2f}")
-            item.setFont(font)
-            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.preview_table.setItem(row, col, item)
-
-        total_item = QTableWidgetItem(f"{total_amount:.2f}")
-        total_item.setFont(font)
-        total_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.preview_table.setItem(row, 7, total_item)
-
-
+                self.preview_table.setItem(row, col, item)

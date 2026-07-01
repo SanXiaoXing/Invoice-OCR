@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/Invoice-OCR.iml" filepath="$PROJECT_DIR$/.idea/Invoice-OCR.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/SnapClaim.iml" filepath="$PROJECT_DIR$/.idea/SnapClaim.iml" />
     </modules>
   </component>
 </project>

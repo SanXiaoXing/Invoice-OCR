@@ -6,3 +6,4 @@ dist/
 .trae/
 
 logs/
+__pycache__/

@@ -160,9 +160,9 @@ def get_theme_qss(theme_name):
             color: {t['text_primary']};
             border: 1px solid {t['border']};
             border-radius: {t['small_radius']};
-            padding: 8px 16px;
+            padding: 4px 14px;
             font-weight: 500;
-            min-height: 32px;
+            min-height: 26px;
         }}
         QPushButton:hover {{
             background-color: {t['selection_bg']};
@@ -318,7 +318,96 @@ def get_theme_qss(theme_name):
         QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
             background-color: {t['border']};
         }}
+        QCalendarWidget {{
+            background-color: {t['card']};
+            color: {t['text_primary']};
+            border: 1px solid {t['border']};
+            border-radius: {t['small_radius']};
+        }}
+        QCalendarWidget QWidget {{
+            background-color: {t['card']};
+            color: {t['text_primary']};
+        }}
+        QCalendarWidget QToolButton {{
+            background-color: {t['card']};
+            color: {t['text_primary']};
+            border: 1px solid {t['border']};
+            border-radius: {t['small_radius']};
+            padding: 4px 8px;
+            font-weight: 500;
+        }}
+        QCalendarWidget QToolButton:hover {{
+            background-color: {t['selection_bg']};
+        }}
+        QCalendarWidget QMenu {{
+            background-color: {t['card']};
+            color: {t['text_primary']};
+            border: 1px solid {t['border']};
+        }}
+        QCalendarWidget QMenu::item:selected {{
+            background-color: {t['accent']};
+            color: {t['accent_text']};
+        }}
+        QCalendarWidget QAbstractItemView {{
+            background-color: {t['card']};
+            color: {t['text_primary']};
+            selection-background-color: {t['accent']};
+            selection-color: {t['accent_text']};
+        }}
+        QCalendarWidget QWidget#qt_calendar_navigationbar {{
+            background-color: {t['header_bg']};
+        }}
+        QCalendarWidget QWidget#qt_calendar_navigationbar QToolButton {{
+            background-color: {t['header_bg']};
+            color: {t['header_text']};
+            border: none;
+            font-weight: 600;
+        }}
+        QCalendarWidget QWidget#qt_calendar_navigationbar QToolButton:hover {{
+            background-color: {t['selection_bg']};
+            color: {t['text_primary']};
+        }}
+        QCalendarWidget QWidget#qt_calendar_monthbutton {{
+            color: {t['header_text']};
+        }}
+        QCalendarWidget QWidget#qt_calendar_yearbutton {{
+            color: {t['header_text']};
+        }}
+        QCalendarWidget QTableView {{
+            background-color: {t['card']};
+            color: {t['text_primary']};
+            selection-background-color: {t['accent']};
+            selection-color: {t['accent_text']};
+            gridline-color: {t['gridline']};
+            border: none;
+        }}
+        QCalendarWidget QTableView::item:hover {{
+            background-color: {t['selection_bg']};
+        }}
         QSplitter::handle {{
+            background-color: {t['border']};
+        }}
+        QMessageBox {{
+            background-color: {t['card']};
+        }}
+        QMessageBox QLabel {{
+            color: {t['text_primary']};
+            font-size: 14px;
+        }}
+        QMessageBox QPushButton {{
+            background-color: {t['card']};
+            color: {t['text_primary']};
+            border: 1px solid {t['border']};
+            border-radius: {t['small_radius']};
+            padding: 5px 20px;
+            min-height: 24px;
+            font-weight: 500;
+            font-size: 13px;
+        }}
+        QMessageBox QPushButton:hover {{
+            background-color: {t['selection_bg']};
+        }}
+        QMessageBox QPushButton:pressed {{
             background-color: {t['border']};
         }}
     """
