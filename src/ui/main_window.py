@@ -316,7 +316,7 @@ class AboutDialog(QDialog):
         layout.addWidget(title)
 
         # 版本
-        version = QLabel("Version: 1.0.0")
+        version = QLabel("Version: 1.0.1")
         version.setObjectName("hint_label")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
