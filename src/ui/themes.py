@@ -25,6 +25,7 @@ THEMES = {
         "progress_bg": "#E5E5E5",
         "progress_chunk": "#000000",
         "group_title_bg": "#FFFFFF",
+        "overlay_bg": "rgba(0, 0, 0, 100)",
     },
     "清爽办公风": {
         "background": "#F8FAFC",
@@ -49,6 +50,7 @@ THEMES = {
         "progress_bg": "#E2E8F0",
         "progress_chunk": "#10B981",
         "group_title_bg": "#FFFFFF",
+        "overlay_bg": "rgba(15, 23, 42, 100)",
     },
     "深色专业风": {
         "background": "#0F172A",
@@ -73,6 +75,7 @@ THEMES = {
         "progress_bg": "#334155",
         "progress_chunk": "#0EA5E9",
         "group_title_bg": "#1E293B",
+        "overlay_bg": "rgba(255, 255, 255, 30)",
     },
     "柔和极简风": {
         "background": "#FAF9F6",
@@ -97,6 +100,7 @@ THEMES = {
         "progress_bg": "#E7E5E4",
         "progress_chunk": "#84CC16",
         "group_title_bg": "#FFFFFF",
+        "overlay_bg": "rgba(0, 0, 0, 80)",
     },
     "企业可信风": {
         "background": "#FFFFFF",
@@ -121,6 +125,7 @@ THEMES = {
         "progress_bg": "#E2E8F0",
         "progress_chunk": "#1E40AF",
         "group_title_bg": "#FFFFFF",
+        "overlay_bg": "rgba(15, 23, 42, 100)",
     },
 }
 
@@ -409,5 +414,19 @@ def get_theme_qss(theme_name):
         }}
         QMessageBox QPushButton:pressed {{
             background-color: {t['border']};
+        }}
+        QFrame#drag_mask {{
+            background-color: {t['overlay_bg']};
+            border: 3px dashed {t['accent']};
+            border-radius: {t['radius']};
+        }}
+        QLabel#drag_mask_hint {{
+            color: {t['accent']};
+            font-size: 24px;
+            font-weight: 700;
+        }}
+        QLabel#drag_mask_subhint {{
+            color: {t['text_secondary']};
+            font-size: 13px;
         }}
     """

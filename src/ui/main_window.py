@@ -7,13 +7,40 @@ from PySide6.QtWidgets import (
     QMenuBar, QMenu, QDialog, QDialogButtonBox, QSizePolicy,
     QCalendarWidget, QFrame
 )
-from PySide6.QtGui import QAction, QActionGroup, QFont, QColor
-from PySide6.QtCore import Qt, QThread, Signal, QDate, QSettings
+from PySide6.QtGui import (
+    QAction, QActionGroup, QFont, QColor,
+    QPixmap, QPainter,
+    QDragEnterEvent, QDragMoveEvent, QDropEvent,
+)
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import Qt, QThread, Signal, QDate, QSettings, QByteArray, QSize
 import os
 from datetime import datetime
 from src.services import expense_calculator, recognition_service, file_service, result_formatter
 from src.ui.themes import get_theme_qss, THEMES
 from src.utils.logger import logger
+
+# upload.svg 路径（相对本文件定位）
+_ICON_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "assets", "icon", "upload.svg")
+)
+
+
+def _render_upload_icon(accent_hex, size=52):
+    """加载 upload.svg 并按主题 accent 重渲染为 QPixmap。
+
+    ponytail: SVG 用 #000000 作 sentinel，运行时替换为 accent，
+    使图标颜色随主题切换（与遮罩边框/提示文字一致）。
+    """
+    with open(_ICON_PATH, "r", encoding="utf-8") as f:
+        svg = f.read().replace("#000000", accent_hex)
+    renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return pixmap
 
 
 class MergePdfDialog(QDialog):
@@ -367,6 +394,7 @@ class MainWindow(QMainWindow):
 
         self.apply_theme(self.current_theme)
         self.init_ui()
+        self._init_drag_mask()
 
         # 首次启动自动弹出关于对话框
         if not self.settings.value("about_shown", type=bool):
@@ -382,6 +410,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'theme_action_group'):
             for action in self.theme_action_group.actions():
                 action.setChecked(action.text() == theme_name)
+        # 切换主题后重渲染遮罩图标，使其颜色与新 accent 一致
+        if hasattr(self, 'drag_mask_icon'):
+            self._refresh_drag_mask_icon()
 
     def on_theme_action_triggered(self):
         """菜单栏主题切换回调"""
@@ -461,6 +492,82 @@ class MainWindow(QMainWindow):
         """弹出关于对话框"""
         dialog = AboutDialog(self, first_launch=first_launch)
         dialog.exec()
+
+    # ── 拖拽上传 ─────────────────────────────────────────
+
+    def _init_drag_mask(self):
+        """创建拖拽遮罩层：拖入文件时覆盖中央区域，给予明确的视觉反馈。
+
+        ponytail: 不做淡入动画——即时显隐本身就是清晰的反馈，
+        且 dragEvent.md 里的 fade_in 用 windowOpacity 对子部件无效。
+        """
+        self.setAcceptDrops(True)
+
+        self.drag_mask = QFrame(self)
+        self.drag_mask.setObjectName("drag_mask")
+        mask_layout = QVBoxLayout(self.drag_mask)
+        mask_layout.setAlignment(Qt.AlignCenter)
+        mask_layout.setSpacing(10)
+
+        self.drag_mask_icon = QLabel()
+        self.drag_mask_icon.setAlignment(Qt.AlignCenter)
+        mask_layout.addWidget(self.drag_mask_icon)
+
+        hint = QLabel("释放文件以添加 PDF")
+        hint.setObjectName("drag_mask_hint")
+        hint.setAlignment(Qt.AlignCenter)
+        sub_hint = QLabel("仅支持 .pdf 格式")
+        sub_hint.setObjectName("drag_mask_subhint")
+        sub_hint.setAlignment(Qt.AlignCenter)
+        mask_layout.addWidget(hint)
+        mask_layout.addWidget(sub_hint)
+
+        self.drag_mask.hide()
+        self._resize_drag_mask()
+        self._refresh_drag_mask_icon()
+
+    def _refresh_drag_mask_icon(self):
+        """按当前主题 accent 重渲染遮罩图标，使其随主题切换换色"""
+        accent = THEMES[self.current_theme]["accent"]
+        self.drag_mask_icon.setPixmap(_render_upload_icon(accent))
+
+    def _resize_drag_mask(self):
+        """遮罩随中央部件尺寸同步（菜单栏下方区域）"""
+        if hasattr(self, 'drag_mask'):
+            self.drag_mask.setGeometry(self.centralWidget().geometry())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._resize_drag_mask()
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self.drag_mask.show()
+            self.drag_mask.raise_()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent):
+        # Qt 在部分平台上需要 dragMoveEvent 显式 accept 才会触发 dropEvent
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.drag_mask.hide()
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent):
+        self.drag_mask.hide()
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.toLocalFile()]
+        pdfs = [p for p in paths if p.lower().endswith('.pdf')]
+        if pdfs:
+            self._add_files(pdfs)
+        elif paths:
+            logger.warning(f"[MainWindow] 拖入文件均非 PDF，已忽略: {paths}")
+        event.acceptProposedAction()
 
     def build_left_panel(self):
         panel = QWidget()
@@ -665,7 +772,10 @@ class MainWindow(QMainWindow):
         if not files:
             return
         logger.info(f"[MainWindow] 用户选择 {len(files)} 个文件")
+        self._add_files(files)
 
+    def _add_files(self, files):
+        """去重并添加文件到列表（upload_files 与 dropEvent 共用）"""
         added = 0
         for file in files:
             if file not in self.file_paths:
